@@ -1,3 +1,4 @@
 *.o
 virtmem
 myvirtualdisk
+tags

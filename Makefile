@@ -1,6 +1,7 @@
 
 virtmem: main.o page_table.o disk.o program.o
 	gcc main.o page_table.o disk.o program.o -o virtmem
+	ctags -R
 
 main.o: main.c
 	gcc -Wall -g -c main.c -o main.o
