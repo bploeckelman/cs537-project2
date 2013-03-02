@@ -32,9 +32,10 @@ void print_stats();
 
 void page_fault_handler( struct page_table *pt, int page )
 {
+    ++stats.page_faults;
+
     if (equal_pages_and_frames) {
         page_table_set_entry(pt, page, page, PROT_READ | PROT_WRITE);
-        ++stats.page_faults;
     } else {
         printf("unhandled page fault on page #%d\n",page);
         exit(1);
