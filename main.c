@@ -24,6 +24,9 @@ struct stats {
 };
 struct stats stats;
 
+struct disk *disk = NULL;
+
+
 void print_stats();
 
 
@@ -52,7 +55,7 @@ int main( int argc, char *argv[] )
     if (npages == nframes) equal_pages_and_frames = 1;
     memset(&stats, 0, sizeof(struct stats));
 
-	struct disk *disk = disk_open("myvirtualdisk",npages);
+	disk = disk_open("myvirtualdisk",npages);
 	if(!disk) {
 		fprintf(stderr,"couldn't create virtual disk: %s\n",strerror(errno));
 		return 1;
