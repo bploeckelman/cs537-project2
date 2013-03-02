@@ -4,6 +4,10 @@ Do not modify this file.
 Make all of your changes to main.c instead.
 */
 
+// For remap_file_pages
+#define _GNU_SOURCE
+#include <sys/mman.h>
+
 #include <sys/types.h>
 #include <unistd.h>
 #include <sys/mman.h>
