@@ -73,7 +73,7 @@ void sort_program( char *data, int length )
 void scan_program( char *cdata, int length )
 {
 	unsigned i, j;
-	unsigned char *data = cdata;
+	unsigned char *data = (unsigned char *) cdata;
 	unsigned total = 0;
 
 	for(i=0;i<length;i++) {
