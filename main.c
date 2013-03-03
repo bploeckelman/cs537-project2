@@ -159,18 +159,14 @@ int main( int argc, char *argv[] )
 
 // ----------------------------------------------------------------------------
 void page_fault_handler_rand( struct page_table *pt, int page ) {
-    // Is the page already in memory and have all its protection bits?
-    //   if so, we probably shouldn't have faulted?
     int frame, bits;
     page_table_get_entry(pt, page, &frame, &bits);
 
+    // Update protection bits and find the frame index for page loading 
     int frame_index = -1;
-    // Update protection bits
-    if (!bits) {
-        // Missing read bits
+    if (!bits) { // Missing read bit
         bits |= PROT_READ;
-        frame_index = find_free_frame();
-        if (frame_index < 0) {
+        if ((frame_index = find_free_frame()) < 0) {
             // No free frames available, evict a random frame's page
             // and use that frame to load the new page
             frame_index = (int) lrand48() % args.nframes;
@@ -181,23 +177,13 @@ void page_fault_handler_rand( struct page_table *pt, int page ) {
             ++stats.disk_writes;
             ++stats.evictions;
         }
-
-        //printf("Set read bit for page %d at frame %d\n", page, frame_index);
-    } else if (bits & PROT_READ && !(bits & PROT_WRITE)) {
-        // Missing write bits
+    } else if (bits & PROT_READ && !(bits & PROT_WRITE)) { // Missing write bit
         bits |= PROT_WRITE;
         frame_index = frame;
-        //printf("Set write bit for page %d at frame %d\n", page, frame_index);
-    } else {
-        // Shouldn't get here...
+    } else { // Shouldn't get here...
         printf("Warning: entered page fault handler for page with all protection bits enabled\n");
         return;
     }
-
-#ifdef DEBUG
-    printf("Setting page %d to frame %d\n", page, frame_index);
-    //page_table_print_entry(pt, page);
-#endif
 
     // Update the page table entry for this page
     page_table_set_entry(pt, page, frame_index, bits);
@@ -210,10 +196,10 @@ void page_fault_handler_rand( struct page_table *pt, int page ) {
     ++stats.disk_reads;
 
 #ifdef DEBUG
+    printf("Setting page %d to frame %d\n", page, frame_index);
     page_table_print_entry(pt, page);
-#endif
-
     puts("");
+#endif
 }
 
 void page_fault_handler_fifo( struct page_table *pt, int page ) {
