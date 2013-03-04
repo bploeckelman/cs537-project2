@@ -278,15 +278,12 @@ void page_fault_handler_custom( struct page_table *pt, int page ) {
 }
 
 int find_free_frame() {
-    // Search frame table for a free (unused) frame
-    int i = 0;
-    for (; i < args.nframes; ++i) {
-        if (frame_table[i] == 0)
-            break;
+    // Search frame table for a free (unused) frame, return its index if found
+    for (int i = 0; i < args.nframes; ++i) {
+        if (frame_table[i] == 0) return i;
     }
-
-    // If a free frame was found, return its index; otherwise return error code
-    return (i < args.nframes) ? i : -1;
+    // No free frames were found, return error code
+    return -1;
 }
 
 /**
