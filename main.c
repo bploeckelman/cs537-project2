@@ -17,10 +17,14 @@ how to use the page table and disk interfaces.
 #include <time.h>
 
 #define DEBUG
+#define FIRST_L 20
+#define SECOND_L 15 //Sizes for first and second-chance lists
 
 struct disk *disk = NULL;
 char *virtmem = NULL;
 char *physmem = NULL;
+int f_entries = 0;
+int s_entries = 0;
 
 // Each entry corresponds to a single frame in physical memory
 //  - zero values indicate that the indexed frame is available
@@ -62,16 +66,24 @@ int find_free_frame();
 
 // FIFO list ------------------------------------------------------------------
 struct list_node {
+    int page_number; //Only used in second-chance
     int frame_index;
     struct list_node *next;
 };
 struct list_node *fifo_head = NULL;
 struct list_node *fifo_tail = NULL;
 
+struct list_node *ff_head = NULL;
+struct list_node *ff_tail = NULL;
+struct list_node *sf_head = NULL;
+struct list_node *sf_tail = NULL;
+
 void fifo_insert(int frame_index);
 int  fifo_remove();
 void fifo_print();
 void fifo_free();
+void sfo_insert(struct page_table *pt, struct list_node * node);
+int sfo_remove(struct list_node * node, struct list_node ** head);
 
 
 // Generic page fault handler -------------------------------------------------
@@ -264,9 +276,90 @@ void page_fault_handler_fifo( struct page_table *pt, int page ) {
 
 // ----------------------------------------------------------------------------
 void page_fault_handler_2fifo( struct page_table *pt, int page ) {
-    // TODO
-    printf("TWO_FIFO: unhandled page fault on page #%d\n",page);
-    exit(1);
+    int frame, bits;
+    page_table_get_entry(pt, page, &frame, &bits);
+
+    // Update protection bits and find the frame index for page loading
+    int frame_index = -1;
+    if (!bits) { // Missing read bit
+        bits |= PROT_READ;
+        // How do we check if something is not in memory or just in second-chance quickly?
+        // Unfortunately, I don't think there is a way.
+        struct list_node * tempNode = sf_head;
+        //check to see if this fault was caused by the page being paged out or by it being in the second-chance list.
+        while (tempNode != NULL && tempNode->page_number != page) {
+            tempNode = tempNode->next;
+        }
+        if (tempNode != NULL) {
+            //We have an entry in the second chance list, bump that back up
+            sfo_remove(tempNode, &sf_head);
+            sfo_insert(pt, tempNode);
+            //TODO: Is the below line necessary?
+            //page_table_set_entry(pt, tempNode->page_number, tempNode->frame_index, PROT_READ);
+            frame_index = frame;
+        }
+        else {
+            // We need a new node.
+            frame_index = find_free_frame();
+            if (frame_index == -1) {
+                // We have no free frames.  We need to evict the oldest page.
+                #ifdef DEBUG
+                    printf("2FIFO: Attempting to evict page.  First-chance head: %p, second-chance head: %p\n", ff_head, sf_head);
+                #endif
+                if (sf_head == NULL)
+                {
+                    tempNode = ff_head;
+                    frame_index = sfo_remove(ff_head, &ff_head);
+                    f_entries--;
+                }
+                else
+                {
+                    tempNode = sf_head;
+                    frame_index = sfo_remove(sf_head, &sf_head);
+                    s_entries--;
+                }
+                disk_write(disk, tempNode->page_number, &physmem[tempNode->frame_index * PAGE_SIZE]);
+                
+                frame_table[tempNode->frame_index] = 0;
+                #ifdef DEBUG
+                    printf("2FIFO: Evicted page that was in frame %i.\n", frame_index);
+                #endif
+                ++stats.disk_writes;
+                ++stats.evictions;
+                free(tempNode);
+            }
+            tempNode = (struct list_node *) malloc(sizeof(struct list_node));
+            if (!tempNode)
+            {
+                printf("Warning: Could not allocate list node\n");
+                return;
+            }
+            tempNode->page_number = page;
+            tempNode->frame_index = frame_index;
+            sfo_insert(pt, tempNode);
+        }
+    } else if (bits & PROT_READ && !(bits & PROT_WRITE)) { // Missing write bit
+        bits |= PROT_WRITE;
+        frame_index = frame;
+    } else { // Shouldn't get here?
+        printf("Warning: entered page fault handler for page with all protection bits enabled\n");
+        return;
+    }
+    
+    // Update the page table entry for this page
+    page_table_set_entry(pt, page, frame_index, bits);
+
+    // Mark the frame as used and insert it into the fifo
+    frame_table[frame_index] = 1;
+
+    // Read in from disk to physical memory
+    disk_read(disk, page, &physmem[frame_index * PAGE_SIZE]);
+    ++stats.disk_reads;
+#ifdef DEBUG
+    printf("Set page %d to frame %d\n", page, frame_index);
+    page_table_print_entry(pt, page);
+    puts("");
+#endif
 }
 
 
@@ -403,6 +496,86 @@ void fifo_free() {
         node = next;
     }
     fifo_head = fifo_tail = NULL;
+}
+
+/**
+ * Insert a node into the combined first- and second-chance lists.
+ * In the event that the first list is full, this properly moves one to the second list.
+ * If that is full as well, this properly evicts the oldest page of the second list.
+ **/
+void sfo_insert(struct page_table *pt, struct list_node * node) {
+    if (ff_head == NULL)
+    {
+        ff_head = node;
+        ff_tail = node;
+        node->next = NULL;
+    }
+    else
+    {
+        ff_tail->next = node;
+        ff_tail = node;
+        node->next = NULL;
+    }
+    f_entries++;
+    if (f_entries > FIRST_L)
+    {
+        //time to move to the second list
+        if (sf_head == NULL)
+        {
+            sf_head = ff_head;
+            sf_tail = sf_head;
+            ff_head = ff_head->next;
+            sf_head->next = NULL;
+        }
+        else
+        {
+            sf_tail->next = node;
+            sf_tail = node;
+            node->next = NULL;
+        }
+        page_table_set_entry(pt, node->page_number, node->frame_index, 0x0);
+        s_entries++;
+        if (s_entries > SECOND_L)
+        {
+            #ifdef DEBUG
+                printf("Removing node %p from second list, and evicting page %i in frame %i\n", sf_head, sf_head->page_number, sf_head->frame_index);
+            #endif
+            //time to evict a page
+            struct list_node * tempNode = sf_head;
+            disk_write(disk, sf_head->page_number, &physmem[sf_head->frame_index * PAGE_SIZE]);
+            frame_table[sf_head->frame_index] = 0;
+            sf_head = sf_head->next;
+            ++stats.disk_writes;
+            ++stats.evictions;
+            s_entries--;
+            free(tempNode);
+        }
+        f_entries--;
+    }
+}
+
+/** Remove a node from our first- or second-chance list and returns its frame number.
+ * This does _not_ free the node or evict it to disk.
+ * Note the double-pointer is so we can use this with either list's head.
+ */
+int sfo_remove(struct list_node * node, struct list_node ** head) {
+    struct list_node * tempNode = *head;
+    if (node == *head) {
+        //special case
+        int frame = (*head)->frame_index;
+        *head = (*head)-> next;
+        return frame;
+    }
+    else {
+        while (tempNode != NULL && tempNode->next != node) {
+        #ifdef DEBUG
+            printf("Remove from second-chance list: current node %p, next node %p\n", tempNode, tempNode->next);
+        #endif
+            tempNode = tempNode->next;
+        }
+        tempNode->next = tempNode->next->next;
+        return tempNode->frame_index;
+    }
 }
 
 void print_stats() {
