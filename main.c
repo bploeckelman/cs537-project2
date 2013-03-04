@@ -127,11 +127,7 @@ int main( int argc, char *argv[] )
 
     // Setup frame table and statistics
     frame_table = malloc(args.nframes * sizeof(unsigned char));
-    for (int i = 0; i < args.nframes; ++i) {
-        frame_table[i] = 0;
-    }
-    // NOTE: the next line blows away args for some reason... not sure what's wrong about it
-    //memset(&frame_table, 0, args.nframes * sizeof(unsigned char)); 
+    memset(frame_table, 0, args.nframes * sizeof(unsigned char));
     memset(&stats, 0, sizeof(struct stats));
 
     // Initialize disk
