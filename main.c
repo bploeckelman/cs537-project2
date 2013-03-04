@@ -60,6 +60,20 @@ void page_fault_handler_custom( struct page_table *pt, int page );
 int find_free_frame();
 
 
+// FIFO list ------------------------------------------------------------------
+struct list_node {
+    int frame_index;
+    struct list_node *next;
+};
+struct list_node *fifo_head = NULL;
+struct list_node *fifo_tail = NULL;
+
+void fifo_insert(int frame_index);
+int  fifo_remove();
+void fifo_print();
+void fifo_free();
+
+
 // Generic page fault handler -------------------------------------------------
 void page_fault_handler( struct page_table *pt, int page )
 {
@@ -162,7 +176,7 @@ void page_fault_handler_rand( struct page_table *pt, int page ) {
     int frame, bits;
     page_table_get_entry(pt, page, &frame, &bits);
 
-    // Update protection bits and find the frame index for page loading 
+    // Update protection bits and find the frame index for page loading
     int frame_index = -1;
     if (!bits) { // Missing read bit
         bits |= PROT_READ;
@@ -171,7 +185,7 @@ void page_fault_handler_rand( struct page_table *pt, int page ) {
             // and use that frame to load the new page
             frame_index = (int) lrand48() % args.nframes;
 #ifdef DEBUG
-            printf("Evicting page from frame %d\n", frame_index);
+            printf("Evicting page in frame #%d for page #%d\n", frame_index, page);
 #endif
             disk_write(disk, page, &physmem[frame_index * PAGE_SIZE]);
             ++stats.disk_writes;
@@ -202,18 +216,65 @@ void page_fault_handler_rand( struct page_table *pt, int page ) {
 #endif
 }
 
+
+// ----------------------------------------------------------------------------
 void page_fault_handler_fifo( struct page_table *pt, int page ) {
-    // TODO
-    printf("FIFO: unhandled page fault on page #%d\n",page);
-    exit(1);
+    int frame, bits;
+    page_table_get_entry(pt, page, &frame, &bits);
+
+    // Update protection bits and find the frame index for page loading
+    int frame_index = -1;
+    if (!bits) { // Missing read bit
+        bits |= PROT_READ;
+        if ((frame_index = find_free_frame()) < 0) {
+            // Evict page from tail of queue
+            if ((frame_index = fifo_remove()) < 0) {
+                printf("Warning: attempted to remove frame index from empty fifo!\n");
+                return;
+            }
+#ifdef DEBUG
+            printf("Evicting page in frame #%d for page #%d\n", frame_index, page);
+#endif
+            disk_write(disk, page, &physmem[frame_index * PAGE_SIZE]);
+            ++stats.disk_writes;
+            ++stats.evictions;
+        }
+    } else if (bits & PROT_READ && !(bits & PROT_WRITE)) { // Missing write bit
+        bits |= PROT_WRITE;
+        frame_index = frame;
+    } else { // Shouldn't get here?
+        printf("Warning: entered page fault handler for page with all protection bits enabled\n");
+        return;
+    }
+
+    // Update the page table entry for this page
+    page_table_set_entry(pt, page, frame_index, bits);
+
+    // Mark the frame as used and insert it into the fifo
+    frame_table[frame_index] = 1;
+    fifo_insert(frame_index);
+
+    // Read in from disk to physical memory
+    disk_read(disk, page, &physmem[frame_index * PAGE_SIZE]);
+    ++stats.disk_reads;
+
+#ifdef DEBUG
+    printf("Set page %d to frame %d\n", page, frame_index);
+    page_table_print_entry(pt, page);
+    puts("");
+#endif
 }
 
+
+// ----------------------------------------------------------------------------
 void page_fault_handler_2fifo( struct page_table *pt, int page ) {
     // TODO
     printf("TWO_FIFO: unhandled page fault on page #%d\n",page);
     exit(1);
 }
 
+
+// ----------------------------------------------------------------------------
 void page_fault_handler_custom( struct page_table *pt, int page ) {
     // TODO
     printf("CUSTOM: unhandled page fault on page #%d\n",page);
@@ -232,6 +293,124 @@ int find_free_frame() {
     return (i < args.nframes) ? i : -1;
 }
 
+/**
+ * Create and insert a new node with the specified frame_index into the fifo list
+ **/
+void fifo_insert(int frame_index) {
+#ifdef DEBUG
+    printf("fifo_insert(): inserting frame #%d", frame_index);
+    fifo_print();
+#endif
+
+    struct list_node *node = malloc(sizeof(struct list_node));
+    node->frame_index = frame_index;
+    node->next = NULL;
+
+    // Insert frame_index into fifo at tail (making it the new tail)
+    if (fifo_tail == NULL) { // No nodes in list
+        fifo_head = node;
+        fifo_tail = node;
+
+#ifdef DEBUG
+        printf("fifo_insert(): inserted\t\t");
+        fifo_print();
+#endif
+    } else {                 // Nodes in list
+        // See if the frame_index is already in the list
+        struct list_node *n = fifo_tail;
+        while (n != NULL) {
+            if (frame_index == n->frame_index) break;
+            else                               n = n->next;
+        }
+
+        // Don't insert already inserted items
+        if (n != NULL) {
+#ifdef DEBUG
+            printf("Node for frame #%d already in list, skipping insertion\n", frame_index);
+#endif
+            free(node);
+            return;
+        }
+
+        node->next = fifo_tail;
+        fifo_tail  = node;
+
+#ifdef DEBUG
+        printf("fifo_insert(): inserted\t\t");
+        fifo_print();
+#endif
+    }
+}
+
+/**
+ * Remove the head node of the fifo list and return its frame_index value,
+ * or -1 if the fifo list is empty
+ **/
+int fifo_remove() {
+#ifdef DEBUG
+    printf("fifo_remove()");
+    fifo_print();
+#endif
+
+    if (fifo_head == NULL) { // Nothing to remove
+#ifdef DEBUG
+        printf("fifo_remove(): head == null, nothing to remove\n");
+#endif
+        return -1;
+    } else if (fifo_head == fifo_tail) { // Only 1 element
+        int frame_index = fifo_head->frame_index;
+        free(fifo_head);
+        fifo_head = fifo_tail = NULL;
+#ifdef DEBUG
+        printf("fifo_remove(): head == tail, 1 element, removing frame #%d", fifo_head->frame_index);
+        fifo_print();
+#endif
+        return frame_index;
+    }
+
+    // Remove the head of the fifo
+    struct list_node *node = fifo_tail;
+    while (node != NULL && node->next != fifo_head) {
+        node = node->next;
+    }
+    struct list_node *head = fifo_head;
+    int frame_index = head->frame_index;
+    fifo_head = node;
+    fifo_head->next = NULL;
+    free(head);
+
+#ifdef DEBUG
+    printf("fifo_remove(): removing frame #%d", frame_index);
+    fifo_print();
+#endif
+    return frame_index;
+}
+
+/**
+ * Print the contents of the fifo from tail to head
+ **/
+void fifo_print() {
+    printf("\tFIFO: [");
+    struct list_node *node = fifo_tail;
+    while (node != NULL) {
+        printf(" %d", node->frame_index);
+        node = node->next;
+    }
+    printf(" ]\n");
+}
+
+/**
+ * Free all the nodes in the fifo list
+ **/
+void fifo_free() {
+    struct list_node *node = fifo_tail;
+    while (node != NULL) {
+        struct list_node *next = node->next;
+        free(node);
+        node = next;
+    }
+    fifo_head = fifo_tail = NULL;
+}
 
 void print_stats() {
     printf("\nStatistics:\n");
