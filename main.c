@@ -84,7 +84,7 @@ void fifo_print();
 void fifo_free();
 void sfo_insert(struct page_table *pt, struct list_node * node);
 int sfo_remove(struct list_node * node, struct list_node ** head);
-
+void evict(struct page_table * pt, int p_num, int f_num);
 
 // Generic page fault handler -------------------------------------------------
 void page_fault_handler( struct page_table *pt, int page )
@@ -183,6 +183,9 @@ int main( int argc, char *argv[] )
 void page_fault_handler_rand( struct page_table *pt, int page ) {
     int frame, bits;
     page_table_get_entry(pt, page, &frame, &bits);
+    #ifdef DEBUG
+        printf("Rand handler: page = %i, frame = %i, bits = %i\n", page, frame, bits);
+    #endif
 
     // Update protection bits and find the frame index for page loading
     int frame_index = -1;
@@ -195,10 +198,11 @@ void page_fault_handler_rand( struct page_table *pt, int page ) {
 #ifdef DEBUG
             printf("Evicting page in frame #%d for page #%d\n", frame_index, page);
 #endif
-            disk_write(disk, page, &physmem[frame_index * PAGE_SIZE]);
-            ++stats.disk_writes;
-            ++stats.evictions;
+            evict(pt, page, frame_index);
         }
+        // Read in from disk to physical memory
+        disk_read(disk, page, &physmem[frame_index * PAGE_SIZE]);
+        ++stats.disk_reads;
     } else if (bits & PROT_READ && !(bits & PROT_WRITE)) { // Missing write bit
         bits |= PROT_WRITE;
         frame_index = frame;
@@ -213,9 +217,6 @@ void page_fault_handler_rand( struct page_table *pt, int page ) {
     // Mark the frame as used
     frame_table[frame_index] = 1;
 
-    // Read in from disk to physical memory
-    disk_read(disk, page, &physmem[frame_index * PAGE_SIZE]);
-    ++stats.disk_reads;
 
 #ifdef DEBUG
     printf("Setting page %d to frame %d\n", page, frame_index);
@@ -243,10 +244,11 @@ void page_fault_handler_fifo( struct page_table *pt, int page ) {
 #ifdef DEBUG
             printf("Evicting page in frame #%d for page #%d\n", frame_index, page);
 #endif
-            disk_write(disk, page, &physmem[frame_index * PAGE_SIZE]);
-            ++stats.disk_writes;
-            ++stats.evictions;
+            evict(pt, page, frame_index);
         }
+        // Read in from disk to physical memory
+        disk_read(disk, page, &physmem[frame_index * PAGE_SIZE]);
+        ++stats.disk_reads;
     } else if (bits & PROT_READ && !(bits & PROT_WRITE)) { // Missing write bit
         bits |= PROT_WRITE;
         frame_index = frame;
@@ -262,10 +264,6 @@ void page_fault_handler_fifo( struct page_table *pt, int page ) {
     frame_table[frame_index] = 1;
     fifo_insert(frame_index);
 
-    // Read in from disk to physical memory
-    disk_read(disk, page, &physmem[frame_index * PAGE_SIZE]);
-    ++stats.disk_reads;
-
 #ifdef DEBUG
     printf("Set page %d to frame %d\n", page, frame_index);
     page_table_print_entry(pt, page);
@@ -273,6 +271,7 @@ void page_fault_handler_fifo( struct page_table *pt, int page ) {
 #endif
 }
 
+//TODO: Does x86 allow us to have memory set to 'write-only?'
 
 // ----------------------------------------------------------------------------
 void page_fault_handler_2fifo( struct page_table *pt, int page ) {
@@ -281,7 +280,7 @@ void page_fault_handler_2fifo( struct page_table *pt, int page ) {
 
     // Update protection bits and find the frame index for page loading
     int frame_index = -1;
-    if (!bits) { // Missing read bit
+    if (!(bits & PROT_READ)) { // Missing read bit
         bits |= PROT_READ;
         // How do we check if something is not in memory or just in second-chance quickly?
         // Unfortunately, I don't think there is a way.
@@ -318,14 +317,11 @@ void page_fault_handler_2fifo( struct page_table *pt, int page ) {
                     frame_index = sfo_remove(sf_head, &sf_head);
                     s_entries--;
                 }
-                disk_write(disk, tempNode->page_number, &physmem[tempNode->frame_index * PAGE_SIZE]);
-                
+                evict(pt, tempNode->page_number, tempNode->frame_index);
                 frame_table[tempNode->frame_index] = 0;
                 #ifdef DEBUG
                     printf("2FIFO: Evicted page that was in frame %i.\n", frame_index);
                 #endif
-                ++stats.disk_writes;
-                ++stats.evictions;
                 free(tempNode);
             }
             tempNode = (struct list_node *) malloc(sizeof(struct list_node));
@@ -337,6 +333,9 @@ void page_fault_handler_2fifo( struct page_table *pt, int page ) {
             tempNode->page_number = page;
             tempNode->frame_index = frame_index;
             sfo_insert(pt, tempNode);
+            // Read in from disk to physical memory
+            disk_read(disk, page, &physmem[frame_index * PAGE_SIZE]);
+            ++stats.disk_reads;
         }
     } else if (bits & PROT_READ && !(bits & PROT_WRITE)) { // Missing write bit
         bits |= PROT_WRITE;
@@ -352,9 +351,6 @@ void page_fault_handler_2fifo( struct page_table *pt, int page ) {
     // Mark the frame as used and insert it into the fifo
     frame_table[frame_index] = 1;
 
-    // Read in from disk to physical memory
-    disk_read(disk, page, &physmem[frame_index * PAGE_SIZE]);
-    ++stats.disk_reads;
 #ifdef DEBUG
     printf("Set page %d to frame %d\n", page, frame_index);
     page_table_print_entry(pt, page);
@@ -533,7 +529,10 @@ void sfo_insert(struct page_table *pt, struct list_node * node) {
             sf_tail = node;
             node->next = NULL;
         }
-        page_table_set_entry(pt, node->page_number, node->frame_index, 0x0);
+        int bits;
+        int frame;
+        page_table_get_entry(pt, node->page_number, &frame, &bits); //I don't like this...
+        page_table_set_entry(pt, node->page_number, node->frame_index, bits & (~PROT_READ));
         s_entries++;
         if (s_entries > SECOND_L)
         {
@@ -542,11 +541,9 @@ void sfo_insert(struct page_table *pt, struct list_node * node) {
             #endif
             //time to evict a page
             struct list_node * tempNode = sf_head;
-            disk_write(disk, sf_head->page_number, &physmem[sf_head->frame_index * PAGE_SIZE]);
+            evict(pt, sf_head->page_number, sf_head->frame_index);
             frame_table[sf_head->frame_index] = 0;
             sf_head = sf_head->next;
-            ++stats.disk_writes;
-            ++stats.evictions;
             s_entries--;
             free(tempNode);
         }
@@ -576,6 +573,29 @@ int sfo_remove(struct list_node * node, struct list_node ** head) {
         tempNode->next = tempNode->next->next;
         return tempNode->frame_index;
     }
+}
+
+void evict(struct page_table * pt, int p_num, int f_num)
+{
+    //NOTE: For now we assume that write bit set implies a difference was made.
+    int frame, bits;
+    page_table_get_entry(pt, p_num, &frame, &bits);
+    
+    #ifdef DEBUG
+        printf("Evicting page %i in frame %i, f_num = %i\n", p_num, frame, f_num);
+        page_table_print_entry(pt, p_num);
+        puts("");
+    #endif
+    
+    if (bits & PROT_WRITE)
+    {
+        #ifdef DEBUG
+            printf("Writing to disk: page number %i, frame number %i\n", p_num, frame);
+        #endif
+        disk_write(disk, p_num, &physmem[f_num * PAGE_SIZE]);
+        ++stats.disk_writes;
+    }
+    ++stats.evictions;
 }
 
 void print_stats() {
