@@ -19,6 +19,9 @@ how to use the page table and disk interfaces.
 #define DEBUG
 #define FIRST_L 20
 #define SECOND_L 15 //Sizes for first and second-chance lists
+#define PAGE(x) frame_table[x].page
+#define BITS(x) frame_table[x].bits
+#define FREE(x) frame_table[x].free
 
 struct disk *disk = NULL;
 char *virtmem = NULL;
@@ -26,10 +29,6 @@ char *physmem = NULL;
 int f_entries = 0;
 int s_entries = 0;
 
-// Each entry corresponds to a single frame in physical memory
-//  - zero values indicate that the indexed frame is available
-//  - non-zero values indicate that the indexed frame is in use
-unsigned char *frame_table = NULL;
 
 // Statistics -----------------------------------------------------------------
 struct stats {
@@ -70,6 +69,19 @@ struct list_node {
     int frame_index;
     struct list_node *next;
 };
+
+typedef struct _f_node {
+    int page;
+    int bits;
+    int free;
+    struct _f_node * next;
+} f_node;
+
+// Each entry corresponds to a single frame in physical memory
+//  - zero values indicate that the indexed frame is available
+//  - non-zero values indicate that the indexed frame is in use
+f_node *frame_table = NULL;
+
 struct list_node *fifo_head = NULL;
 struct list_node *fifo_tail = NULL;
 
@@ -84,7 +96,7 @@ void fifo_print();
 void fifo_free();
 void sfo_insert(struct page_table *pt, struct list_node * node);
 int sfo_remove(struct list_node * node, struct list_node ** head);
-void evict(struct page_table * pt, int p_num, int f_num);
+void evict(struct page_table * pt, int f_num);
 
 // Generic page fault handler -------------------------------------------------
 void page_fault_handler( struct page_table *pt, int page )
@@ -138,8 +150,13 @@ int main( int argc, char *argv[] )
     }
 
     // Setup frame table and statistics
-    frame_table = malloc(args.nframes * sizeof(unsigned char));
-    memset(frame_table, 0, args.nframes * sizeof(unsigned char));
+    frame_table = malloc(args.nframes * sizeof(f_node));
+    if (frame_table == NULL)
+    {
+        printf("Warning: could not allocate space for frame database!\n");
+        exit(1);
+    }
+    memset(frame_table, 0, args.nframes * sizeof(f_node));
     memset(&stats, 0, sizeof(struct stats));
 
     // Initialize disk
@@ -198,7 +215,7 @@ void page_fault_handler_rand( struct page_table *pt, int page ) {
 #ifdef DEBUG
             printf("Evicting page in frame #%d for page #%d\n", frame_index, page);
 #endif
-            evict(pt, page, frame_index);
+            evict(pt, frame_index);
         }
         // Read in from disk to physical memory
         disk_read(disk, page, &physmem[frame_index * PAGE_SIZE]);
@@ -213,9 +230,11 @@ void page_fault_handler_rand( struct page_table *pt, int page ) {
 
     // Update the page table entry for this page
     page_table_set_entry(pt, page, frame_index, bits);
+    PAGE(frame_index) = page;
+    BITS(frame_index) = bits;
 
     // Mark the frame as used
-    frame_table[frame_index] = 1;
+    FREE(frame_index) = 1;
 
 
 #ifdef DEBUG
@@ -244,7 +263,7 @@ void page_fault_handler_fifo( struct page_table *pt, int page ) {
 #ifdef DEBUG
             printf("Evicting page in frame #%d for page #%d\n", frame_index, page);
 #endif
-            evict(pt, page, frame_index);
+            evict(pt, frame_index);
         }
         // Read in from disk to physical memory
         disk_read(disk, page, &physmem[frame_index * PAGE_SIZE]);
@@ -259,9 +278,11 @@ void page_fault_handler_fifo( struct page_table *pt, int page ) {
 
     // Update the page table entry for this page
     page_table_set_entry(pt, page, frame_index, bits);
+    PAGE(frame_index) = page;
+    BITS(frame_index) = bits;
 
     // Mark the frame as used and insert it into the fifo
-    frame_table[frame_index] = 1;
+    FREE(frame_index) = 1;
     fifo_insert(frame_index);
 
 #ifdef DEBUG
@@ -317,8 +338,8 @@ void page_fault_handler_2fifo( struct page_table *pt, int page ) {
                     frame_index = sfo_remove(sf_head, &sf_head);
                     s_entries--;
                 }
-                evict(pt, tempNode->page_number, tempNode->frame_index);
-                frame_table[tempNode->frame_index] = 0;
+                evict(pt, tempNode->frame_index);
+                frame_table[tempNode->frame_index].free = 0;
                 #ifdef DEBUG
                     printf("2FIFO: Evicted page that was in frame %i.\n", frame_index);
                 #endif
@@ -347,9 +368,11 @@ void page_fault_handler_2fifo( struct page_table *pt, int page ) {
     
     // Update the page table entry for this page
     page_table_set_entry(pt, page, frame_index, bits);
+    PAGE(frame_index) = page;
+    BITS(frame_index) = bits;
 
     // Mark the frame as used and insert it into the fifo
-    frame_table[frame_index] = 1;
+    FREE(frame_index) = 1;
 
 #ifdef DEBUG
     printf("Set page %d to frame %d\n", page, frame_index);
@@ -369,7 +392,7 @@ void page_fault_handler_custom( struct page_table *pt, int page ) {
 int find_free_frame() {
     // Search frame table for a free (unused) frame, return its index if found
     for (int i = 0; i < args.nframes; ++i) {
-        if (frame_table[i] == 0) return i;
+        if (FREE(i) == 0) return i;
     }
     // No free frames were found, return error code
     return -1;
@@ -533,6 +556,8 @@ void sfo_insert(struct page_table *pt, struct list_node * node) {
         int frame;
         page_table_get_entry(pt, node->page_number, &frame, &bits); //I don't like this...
         page_table_set_entry(pt, node->page_number, node->frame_index, bits & (~PROT_READ));
+        frame_table[node->frame_index].bits = bits & (~PROT_READ);
+        
         s_entries++;
         if (s_entries > SECOND_L)
         {
@@ -541,8 +566,8 @@ void sfo_insert(struct page_table *pt, struct list_node * node) {
             #endif
             //time to evict a page
             struct list_node * tempNode = sf_head;
-            evict(pt, sf_head->page_number, sf_head->frame_index);
-            frame_table[sf_head->frame_index] = 0;
+            evict(pt, sf_head->frame_index);
+            FREE(sf_head->frame_index) = 0;
             sf_head = sf_head->next;
             s_entries--;
             free(tempNode);
@@ -575,24 +600,22 @@ int sfo_remove(struct list_node * node, struct list_node ** head) {
     }
 }
 
-void evict(struct page_table * pt, int p_num, int f_num)
+void evict(struct page_table * pt, int f_num)
 {
     //NOTE: For now we assume that write bit set implies a difference was made.
-    int frame, bits;
-    page_table_get_entry(pt, p_num, &frame, &bits);
-    
+
     #ifdef DEBUG
-        printf("Evicting page %i in frame %i, f_num = %i\n", p_num, frame, f_num);
-        page_table_print_entry(pt, p_num);
+        printf("Evicting page %i in frame %i, f_num = %i\n", PAGE(f_num), f_num, f_num);
+        page_table_print_entry(pt, PAGE(f_num));
         puts("");
     #endif
     
-    if (bits & PROT_WRITE)
+    if (BITS(f_num) & PROT_WRITE)
     {
         #ifdef DEBUG
-            printf("Writing to disk: page number %i, frame number %i\n", p_num, frame);
+            printf("Writing to disk: page number %i, frame number %i\n", PAGE(f_num), f_num);
         #endif
-        disk_write(disk, p_num, &physmem[f_num * PAGE_SIZE]);
+        disk_write(disk, PAGE(f_num), &physmem[f_num * PAGE_SIZE]);
         ++stats.disk_writes;
     }
     ++stats.evictions;
