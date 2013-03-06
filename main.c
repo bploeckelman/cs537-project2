@@ -105,6 +105,7 @@ void page_fault_handler( struct page_table *pt, int page )
 
     if (args.npages == args.nframes) {
         // Handle simple case of direct mapping between pages and frames
+        printf("Accessing page %i\n", page);
         page_table_set_entry(pt, page, page, PROT_READ | PROT_WRITE);
     } else {
         // Delegate to appropriate page handler for active policy
@@ -137,7 +138,7 @@ int main( int argc, char *argv[] )
     args.policy  = argv[3];
     args.program = argv[4];
 
-    srand48((long int) time(NULL));
+    //srand48((long int) time(NULL));
 
     // Set page fault handling policy
          if (!strcmp(args.policy,"rand"))   fault_policy = RAND;
@@ -618,6 +619,8 @@ void evict(struct page_table * pt, int f_num)
         disk_write(disk, PAGE(f_num), &physmem[f_num * PAGE_SIZE]);
         ++stats.disk_writes;
     }
+    page_table_set_entry(pt, PAGE(f_num), f_num, 0x0);
+    BITS(f_num) = 0x0;
     ++stats.evictions;
 }
 
