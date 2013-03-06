@@ -16,12 +16,13 @@ how to use the page table and disk interfaces.
 #include <errno.h>
 #include <time.h>
 
-//#define DEBUG
+#define DEBUG
 #define FIRST_L 20
 #define SECOND_L 5 //Sizes for first and second-chance lists
 #define PAGE(x) frame_table[x].page
 #define BITS(x) frame_table[x].bits
 #define FREE(x) frame_table[x].free
+#define FRAMEID(x) ((int) (x - frame_table))
 
 struct disk *disk = NULL;
 char *virtmem = NULL;
@@ -74,16 +75,15 @@ typedef struct _f_node {
     int page;
     int bits;
     int free;
+    int f_list; //0 if in none, 1 if in FIFO or first-chance, 2 if in second
     struct _f_node * next;
 } f_node;
 
-// Each entry corresponds to a single frame in physical memory
-//  - zero values indicate that the indexed frame is available
-//  - non-zero values indicate that the indexed frame is in use
+// Our page frame database.  Each entry is an above-defined f_node.
 f_node *frame_table = NULL;
 
-struct list_node *fifo_head = NULL;
-struct list_node *fifo_tail = NULL;
+f_node *fifo_head = NULL;
+f_node *fifo_tail = NULL;
 
 struct list_node *ff_head = NULL;
 struct list_node *ff_tail = NULL;
@@ -410,38 +410,31 @@ void fifo_insert(int frame_index) {
     fifo_print();
 #endif
 
-    struct list_node *node = malloc(sizeof(struct list_node));
-    node->frame_index = frame_index;
-    node->next = NULL;
+    f_node * node = &frame_table[frame_index];
 
     // Insert frame_index into fifo at tail (making it the new tail)
     if (fifo_tail == NULL) { // No nodes in list
         fifo_head = node;
         fifo_tail = node;
-
+        node->f_list = 1;
 #ifdef DEBUG
         printf("fifo_insert(): inserted\t\t");
         fifo_print();
 #endif
     } else {                 // Nodes in list
         // See if the frame_index is already in the list
-        struct list_node *n = fifo_tail;
-        while (n != NULL) {
-            if (frame_index == n->frame_index) break;
-            else                               n = n->next;
-        }
-
+        if (node->f_list == 1)
+        {
         // Don't insert already inserted items
-        if (n != NULL) {
-#ifdef DEBUG
-            printf("Node for frame #%d already in list, skipping insertion\n", frame_index);
-#endif
-            free(node);
-            return;
+        #ifdef DEBUG
+             printf("Node for frame #%d already in list, skipping insertion\n", frame_index);
+        #endif
+        return;
         }
 
         node->next = fifo_tail;
         fifo_tail  = node;
+        node->f_list = 1;
 
 #ifdef DEBUG
         printf("fifo_insert(): inserted\t\t");
@@ -466,26 +459,26 @@ int fifo_remove() {
 #endif
         return -1;
     } else if (fifo_head == fifo_tail) { // Only 1 element
-        int frame_index = fifo_head->frame_index;
-        free(fifo_head);
-        fifo_head = fifo_tail = NULL;
+        int frame_index = FRAMEID(fifo_head);
 #ifdef DEBUG
-        printf("fifo_remove(): head == tail, 1 element, removing frame #%d", fifo_head->frame_index);
-        fifo_print();
+        printf("fifo_remove(): head == tail, 1 element, removing frame #%i", FRAMEID(fifo_head));
 #endif
+        fifo_head->f_list = 0;
+        fifo_head = fifo_tail = NULL;
+        fifo_print();
         return frame_index;
     }
 
     // Remove the head of the fifo
-    struct list_node *node = fifo_tail;
+    f_node *node = fifo_tail;
+    //TODO: Add a prev pointer to avoid walking the list?
     while (node != NULL && node->next != fifo_head) {
         node = node->next;
     }
-    struct list_node *head = fifo_head;
-    int frame_index = head->frame_index;
+    fifo_head->f_list = 0;
+    int frame_index = FRAMEID(fifo_head);
     fifo_head = node;
     fifo_head->next = NULL;
-    free(head);
 
 #ifdef DEBUG
     printf("fifo_remove(): removing frame #%d", frame_index);
@@ -499,17 +492,18 @@ int fifo_remove() {
  **/
 void fifo_print() {
     printf("\tFIFO: [");
-    struct list_node *node = fifo_tail;
+    f_node *node = fifo_tail;
     while (node != NULL) {
-        printf(" %d", node->frame_index);
+        printf("%i ", FRAMEID(node));
         node = node->next;
     }
-    printf(" ]\n");
+    printf("]\n");
 }
 
-/**
+
+/** TODO: This should be unnecessary now.
  * Free all the nodes in the fifo list
- **/
+ *
 void fifo_free() {
     struct list_node *node = fifo_tail;
     while (node != NULL) {
@@ -518,7 +512,7 @@ void fifo_free() {
         node = next;
     }
     fifo_head = fifo_tail = NULL;
-}
+}*/
 
 /**
  * Insert a node into the combined first- and second-chance lists.
