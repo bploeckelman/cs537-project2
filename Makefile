@@ -1,5 +1,5 @@
 CC=gcc
-FLAGS=-c -ggdb3 --std=gnu99 -Wall -Werror
+FLAGS=-c -ggdb3 --std=gnu99 -Wall #-Werror
 TAGS=ctags -R
 
 virtmem: main.o page_table.o disk.o program.o
