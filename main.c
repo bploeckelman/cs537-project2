@@ -138,7 +138,10 @@ int main( int argc, char *argv[] )
     args.policy  = argv[3];
     args.program = argv[4];
 
-    //srand48((long int) time(NULL));
+    if (args.npages < 1 || args.nframes < 1) {
+        printf("invalid argument: number of pages and frames must be greater than 0\n");
+        return 1;
+    }
 
     // Set page fault handling policy
          if (!strcmp(args.policy,"rand"))   fault_policy = RAND;
