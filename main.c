@@ -16,7 +16,7 @@ how to use the page table and disk interfaces.
 #include <errno.h>
 #include <time.h>
 
-//#define DEBUG
+#define DEBUG
 #define FIRST_L 200
 #define SECOND_L 50 //Sizes for first and second-chance lists
 #define PAGE(x) frame_table[x].page
@@ -62,15 +62,10 @@ void page_fault_handler_2fifo( struct page_table *pt, int page );
 void page_fault_handler_custom( struct page_table *pt, int page );
 
 int find_free_frame();
+int find_clean_frame();
 
 
 // FIFO list ------------------------------------------------------------------
-struct list_node {
-    int page_number; //Only used in second-chance
-    int frame_index;
-    struct list_node *next;
-};
-
 typedef struct _f_node {
     int page;
     int bits;
@@ -93,9 +88,10 @@ f_node *sf_tail = NULL;
 void fifo_insert(int frame_index);
 int  fifo_remove();
 void fifo_print();
-void fifo_free();
+
 void sfo_insert(struct page_table *pt, f_node * node);
 int sfo_remove(f_node * node, f_node ** head);
+
 void evict(struct page_table * pt, int f_num);
 
 // Generic page fault handler -------------------------------------------------
@@ -105,7 +101,6 @@ void page_fault_handler( struct page_table *pt, int page )
 
     if (args.npages == args.nframes) {
         // Handle simple case of direct mapping between pages and frames
-        printf("Now paging in page: %d\n", page);
         page_table_set_entry(pt, page, page, PROT_READ | PROT_WRITE);
     } else {
         // Delegate to appropriate page handler for active policy
@@ -193,8 +188,10 @@ int main( int argc, char *argv[] )
 	page_table_delete(pt);
 	disk_close(disk);
 
+#ifdef DEBUG
     // Results
-    //print_stats(&stats);
+    print_stats(&stats);
+#endif
 
 	return 0;
 }
@@ -216,9 +213,6 @@ void page_fault_handler_rand( struct page_table *pt, int page ) {
             // No free frames available, evict a random frame's page
             // and use that frame to load the new page
             frame_index = (int) lrand48() % args.nframes;
-#ifdef DEBUG
-            printf("Evicting page in frame #%d for page #%d\n", frame_index, page);
-#endif
             evict(pt, frame_index);
         }
         // Read in from disk to physical memory
@@ -267,7 +261,6 @@ void page_fault_handler_fifo( struct page_table *pt, int page ) {
             evict(pt, frame_index);
         }
         // Read in from disk to physical memory
-        printf("Now paging in page: %d\n", page);
         disk_read(disk, page, &physmem[frame_index * PAGE_SIZE]);
         ++stats.disk_reads;
     } else if (bits & PROT_READ && !(bits & PROT_WRITE)) { // Missing write bit
@@ -352,7 +345,6 @@ void page_fault_handler_2fifo( struct page_table *pt, int page ) {
             sfo_insert(pt, tempNode);
             tempNode->f_list = 1;
             // Read in from disk to physical memory
-            printf("Now paging in page: %d\n", page);
             disk_read(disk, page, &physmem[frame_index * PAGE_SIZE]);
             ++stats.disk_reads;
         }
@@ -382,17 +374,74 @@ void page_fault_handler_2fifo( struct page_table *pt, int page ) {
 
 // ----------------------------------------------------------------------------
 void page_fault_handler_custom( struct page_table *pt, int page ) {
-    // TODO
-    printf("CUSTOM: unhandled page fault on page #%d\n",page);
-    exit(1);
+    int frame, bits;
+    page_table_get_entry(pt, page, &frame, &bits);
+
+    // Update protection bits and find the frame index for page loading
+    int frame_index = -1;
+    if (!bits) { // Missing read bit
+        bits |= PROT_READ;
+        if ((frame_index = find_free_frame()) < 0) {
+            // Evict clean page (if there is one)
+            if ((frame_index = find_clean_frame()) < 0) {
+                // No clean pages available, remove one from fifo to evict
+                if ((frame_index = fifo_remove()) < 0) {
+                    printf("Warning: attempted to remove frame index from empty fifo!\n");
+                    return;
+                }
+            }
+            evict(pt, frame_index);
+        }
+        // Read in from disk to physical memory
+        disk_read(disk, page, &physmem[frame_index * PAGE_SIZE]);
+        ++stats.disk_reads;
+    } else if (bits & PROT_READ && !(bits & PROT_WRITE)) { // Missing write bit
+        bits |= PROT_WRITE;
+        frame_index = frame;
+    } else { // Shouldn't get here?
+        printf("Warning: entered page fault handler for page with all protection bits enabled\n");
+        return;
+    }
+
+    // Update the page table entry for this page
+    page_table_set_entry(pt, page, frame_index, bits);
+    PAGE(frame_index) = page;
+    BITS(frame_index) = bits;
+
+    // Mark the frame as used and insert it into the fifo
+    FREE(frame_index) = 1;
+    fifo_insert(frame_index);
+
+#ifdef DEBUG
+    printf("Set page %d to frame %d\n", page, frame_index);
+    page_table_print_entry(pt, page);
+    puts("");
+#endif
 }
 
+
+/**
+ * Search for unused frame, return its index if found or -1 if none available
+ **/
 int find_free_frame() {
     // Search frame table for a free (unused) frame, return its index if found
     for (int i = 0; i < args.nframes; ++i) {
         if (FREE(i) == 0) return i;
     }
     // No free frames were found, return error code
+    return -1;
+}
+
+/**
+ * Searches for a non-dirty page that can be evicted without writing back to disk
+ * @param 
+ **/
+int find_clean_frame() {
+    // Search frame table for a clean frame, return its index if found
+    for (int i = 0; i < args.nframes; ++i) {
+        if (BITS(i) & (~PROT_WRITE)) return i;
+    }
+    // No clean pages were found, return error code
     return -1;
 }
 
@@ -420,11 +469,11 @@ void fifo_insert(int frame_index) {
         // See if the frame_index is already in the list
         if (node->f_list == 1)
         {
-        // Don't insert already inserted items
-        #ifdef DEBUG
-             printf("Node for frame #%d already in list, skipping insertion\n", frame_index);
-        #endif
-        return;
+            // Don't insert already inserted items
+#ifdef DEBUG
+            printf("Node for frame #%d already in list, skipping insertion\n", frame_index);
+#endif
+            return;
         }
 
         node->next = fifo_tail;
@@ -494,20 +543,6 @@ void fifo_print() {
     }
     printf("]\n");
 }
-
-
-/** TODO: This should be unnecessary now.
- * Free all the nodes in the fifo list
- *
-void fifo_free() {
-    struct list_node *node = fifo_tail;
-    while (node != NULL) {
-        struct list_node *next = node->next;
-        free(node);
-        node = next;
-    }
-    fifo_head = fifo_tail = NULL;
-}*/
 
 /**
  * Insert a node into the combined first- and second-chance lists.
@@ -592,22 +627,23 @@ int sfo_remove(f_node * node, f_node ** head) {
     }
 }
 
+/**
+ * Evicts the page that is in the frame indexed by f_num, writing to disk first if needed
+ **/
 void evict(struct page_table * pt, int f_num)
 {
     //NOTE: For now we assume that write bit set implies a difference was made.
-
-    #ifdef DEBUG
-        printf("Evicting page %i in frame %i, f_num = %i\n", PAGE(f_num), f_num, f_num);
-        page_table_print_entry(pt, PAGE(f_num));
-        puts("");
-    #endif
+#ifdef DEBUG
+    printf("Evicting page %i in frame %i, f_num = %i\n", PAGE(f_num), f_num, f_num);
+    page_table_print_entry(pt, PAGE(f_num));
+    puts("");
+#endif
     
     if (BITS(f_num) & PROT_WRITE)
     {
-        #ifdef DEBUG
-            printf("Writing to disk: page number %i, frame number %i\n", PAGE(f_num), f_num);
-        #endif
-        printf("Now paging out page: %d\n", PAGE(f_num));
+#ifdef DEBUG
+        printf("Writing to disk: page number %i, frame number %i\n", PAGE(f_num), f_num);
+#endif
         disk_write(disk, PAGE(f_num), &physmem[f_num * PAGE_SIZE]);
         ++stats.disk_writes;
     }
@@ -617,11 +653,7 @@ void evict(struct page_table * pt, int f_num)
 }
 
 void print_stats() {
-    printf("\nStatistics:\n");
-    printf("=====================\n");
-    printf("Page faults = %d\n", stats.page_faults);
-    printf("Disk reads  = %d\n", stats.disk_reads);
-    printf("Disk writes = %d\n", stats.disk_writes);
-    printf("Evictions   = %d\n", stats.evictions);
+    printf("\nStatistics:  flt(%d) rd(%d) wr(%d) ev(%d)\n",
+        stats.page_faults, stats.disk_reads, stats.disk_writes, stats.evictions);
 }
 
