@@ -18,7 +18,7 @@ how to use the page table and disk interfaces.
 
 //#define DEBUG
 #define FIRST_L 20
-#define SECOND_L 15 //Sizes for first and second-chance lists
+#define SECOND_L 5 //Sizes for first and second-chance lists
 #define PAGE(x) frame_table[x].page
 #define BITS(x) frame_table[x].bits
 #define FREE(x) frame_table[x].free
