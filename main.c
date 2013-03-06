@@ -16,7 +16,7 @@ how to use the page table and disk interfaces.
 #include <errno.h>
 #include <time.h>
 
-#define DEBUG
+//#define DEBUG
 #define FIRST_L 20
 #define SECOND_L 15 //Sizes for first and second-chance lists
 #define PAGE(x) frame_table[x].page
@@ -105,7 +105,7 @@ void page_fault_handler( struct page_table *pt, int page )
 
     if (args.npages == args.nframes) {
         // Handle simple case of direct mapping between pages and frames
-        printf("Accessing page %i\n", page);
+        printf("Now paging in page: %d\n", page);
         page_table_set_entry(pt, page, page, PROT_READ | PROT_WRITE);
     } else {
         // Delegate to appropriate page handler for active policy
@@ -191,7 +191,7 @@ int main( int argc, char *argv[] )
 	disk_close(disk);
 
     // Results
-    print_stats(&stats);
+    //print_stats(&stats);
 
 	return 0;
 }
@@ -261,12 +261,10 @@ void page_fault_handler_fifo( struct page_table *pt, int page ) {
                 printf("Warning: attempted to remove frame index from empty fifo!\n");
                 return;
             }
-#ifdef DEBUG
-            printf("Evicting page in frame #%d for page #%d\n", frame_index, page);
-#endif
             evict(pt, frame_index);
         }
         // Read in from disk to physical memory
+        printf("Now paging in page: %d\n", page);
         disk_read(disk, page, &physmem[frame_index * PAGE_SIZE]);
         ++stats.disk_reads;
     } else if (bits & PROT_READ && !(bits & PROT_WRITE)) { // Missing write bit
@@ -356,6 +354,7 @@ void page_fault_handler_2fifo( struct page_table *pt, int page ) {
             tempNode->frame_index = frame_index;
             sfo_insert(pt, tempNode);
             // Read in from disk to physical memory
+            printf("Now paging in page: %d\n", page);
             disk_read(disk, page, &physmem[frame_index * PAGE_SIZE]);
             ++stats.disk_reads;
         }
@@ -616,6 +615,7 @@ void evict(struct page_table * pt, int f_num)
         #ifdef DEBUG
             printf("Writing to disk: page number %i, frame number %i\n", PAGE(f_num), f_num);
         #endif
+        printf("Now paging out page: %d\n", PAGE(f_num));
         disk_write(disk, PAGE(f_num), &physmem[f_num * PAGE_SIZE]);
         ++stats.disk_writes;
     }
