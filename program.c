@@ -38,7 +38,9 @@ void focus_program( char *data, int length )
 		int start = rand()%length;
 		int size = 25;
 		for(i=0;i<100;i++) {
-			data[ (start+rand()%size)%length ] = rand();
+		    int index = (start+rand()%size)%length;
+			//printf("Accessing data at index %i, which is page %i\n", index, index/4096);
+			data[ index ] = rand();
 		}
 	}
 

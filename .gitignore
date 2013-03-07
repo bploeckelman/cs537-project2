@@ -4,3 +4,5 @@ virtmem
 myvirtualdisk
 tags
 run-tests.csh
+main-noprev.c
+main_BAK.c

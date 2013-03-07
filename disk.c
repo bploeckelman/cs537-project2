@@ -59,6 +59,10 @@ void disk_write( struct disk *d, int block, const char *data )
 		fprintf(stderr,"disk_write: failed to write block #%d: %s\n",block,strerror(errno));
 		abort();
 	}
+	else
+	{
+		printf("Now paging out page: %d\n", block);
+	}
 }
 
 void disk_read( struct disk *d, int block, char *data )
@@ -72,6 +76,10 @@ void disk_read( struct disk *d, int block, char *data )
 	if(actual!=d->block_size) {
 		fprintf(stderr,"disk_read: failed to read block #%d: %s\n",block,strerror(errno));
 		abort();
+	}
+	else
+	{
+		printf("Now paging in page: %d\n", block);
 	}
 }
 

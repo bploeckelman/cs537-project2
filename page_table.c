@@ -1,4 +1,3 @@
-
 /*
 Do not modify this file.
 Make all of your changes to main.c instead.
@@ -69,11 +68,7 @@ struct page_table * page_table_create( int npages, int nframes, page_fault_handl
 	pt->fd = open(filename,O_CREAT|O_TRUNC|O_RDWR,0777);
 	if(!pt->fd) return 0;
 
-	if (npages > nframes) 
-	  ftruncate(pt->fd,PAGE_SIZE*npages);
-	else
-	  ftruncate(pt->fd,PAGE_SIZE*nframes);
-
+	ftruncate(pt->fd,PAGE_SIZE*npages);
 
 	unlink(filename);
 
@@ -126,6 +121,23 @@ void page_table_set_entry( struct page_table *pt, int page, int frame, int bits 
 
 	remap_file_pages(pt->virtmem+page*PAGE_SIZE,PAGE_SIZE,0,frame,0);
 	mprotect(pt->virtmem+page*PAGE_SIZE,PAGE_SIZE,bits);
+
+	// Check to make sure too many frames aren't mapped
+	int numMapped = 0;
+	int i;
+	for(i = 0; i < pt->npages; i++)
+	{
+		if(pt->page_bits[i] != 0)
+			numMapped++;
+	}
+
+	// If there are, alert user and stop execution
+	if(numMapped > pt->nframes)
+	{
+		fprintf(stderr,"page_table_set_entry: cannot have more than %d frames mapped at a time!\n",pt->nframes);
+		abort();
+
+	}
 }
 
 void page_table_get_entry( struct page_table *pt, int page, int *frame, int *bits )
