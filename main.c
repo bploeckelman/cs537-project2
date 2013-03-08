@@ -6,6 +6,10 @@ The header files page_table.h and disk.h explain
 how to use the page table and disk interfaces.
 */
 
+// Authors:
+// Nathan Deisinger (deisinge)
+// Brian Ploeckelman (ploeckel)
+
 // NOTICE  -----------------------------------------------------------------
 // This program implements a custom algorithm which does not surpass 2FIFO
 // for sort in all cases.  It does do better for cases in which we are using
