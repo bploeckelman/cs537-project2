@@ -110,17 +110,17 @@ f_node *sf_tail = NULL;
 
 void fifo_insert(int frame_index);
 int  fifo_remove();
-void fifo_print();
 
+// We use separate functions to handle the second-chance FIFO insertions/removals.
 void sfo_insert(struct page_table *pt, f_node * node);
 int sfo_remove(f_node * node, f_node ** head);
-void sfo_print();
 
 void evict(struct page_table * pt, int f_num);
 
-// Generic page fault handler -------------------------------------------------
-void page_fault_handler( struct page_table *pt, int page )
-{
+/**
+ * Generic page fault handler.
+ */
+void page_fault_handler( struct page_table *pt, int page ) {
     ++stats.page_faults;
         // Delegate to appropriate page handler for active policy
         switch (fault_policy) {
@@ -134,13 +134,13 @@ void page_fault_handler( struct page_table *pt, int page )
                 exit(1);
             }
         }
-   // }
 }
 
 
-// Entry point ----------------------------------------------------------------
-int main( int argc, char *argv[] )
-{
+/**
+ * Main function.  Performs basic setup and parses arguments.
+ */
+int main( int argc, char *argv[] ) {
 	if(argc!=5) {
 		printf("use: virtmem <npages> <nframes> <rand|fifo|2fifo|custom> <sort|scan|focus>\n");
 		return 1;
@@ -157,17 +157,14 @@ int main( int argc, char *argv[] )
         return 1;
     }
     
-    if (args.nframes < 5)
-    {
+    if (args.nframes < 5) {
         FIRST_L = args.nframes - 1;
         SECOND_L = 1;
     }
-    else
-    {
+    else {
         FIRST_L = args.nframes * 3/4;
         SECOND_L = args.nframes * 1/4;
-        if (args.nframes % 4 != 0)
-        {
+        if (args.nframes % 4 != 0) {
             FIRST_L++;
         }
     }
@@ -184,8 +181,7 @@ int main( int argc, char *argv[] )
 
     // Setup frame table and statistics
     frame_table = malloc(args.nframes * sizeof(f_node));
-    if (frame_table == NULL)
-    {
+    if (frame_table == NULL) {
         printf("Warning: could not allocate space for frame database!\n");
         exit(1);
     }
@@ -220,33 +216,22 @@ int main( int argc, char *argv[] )
 	else {
 		fprintf(stderr,"unknown program: %s\n", args.program);
 	}
-	
-	#ifdef DEBUG
-	page_table_print(pt);
-	#endif
 
     // Cleanup
     free(frame_table);
 	page_table_delete(pt);
 	disk_close(disk);
 
-#ifdef RESULTS
-    // Results
-    graph_stats(&stats);
-#endif
-
 	return 0;
 }
 
 
-// ----------------------------------------------------------------------------
-// Random handler.
+/**
+ * Random handler.
+ */
 void page_fault_handler_rand( struct page_table *pt, int page ) {
     int frame, bits;
     page_table_get_entry(pt, page, &frame, &bits);
-    #ifdef DEBUG
-        printf("Rand handler: page = %i, frame = %i, bits = %i\n", page, frame, bits);
-    #endif
 
     // Update protection bits and find the frame index for page loading
     int frame_index = -1;
@@ -277,20 +262,11 @@ void page_fault_handler_rand( struct page_table *pt, int page ) {
     // Mark the frame as used
     FREE(frame_index) = 1;
 
-
-#ifdef DEBUG
-    printf("Setting page %d to frame %d\n", page, frame_index);
-    page_table_print_entry(pt, page);
-    puts("");
-#endif
-#ifdef MOVE
-    page_table_print(pt);
-#endif
 }
 
-
-// ----------------------------------------------------------------------------
-// Standard FIFO handler.
+/**
+ * Standard FIFO handler.
+ */
 void page_fault_handler_fifo( struct page_table *pt, int page ) {
     int frame, bits;
     page_table_get_entry(pt, page, &frame, &bits);
@@ -327,16 +303,12 @@ void page_fault_handler_fifo( struct page_table *pt, int page ) {
     FREE(frame_index) = 1;
     fifo_insert(frame_index);
 
-#ifdef DEBUG
-    printf("Set page %d to frame %d\n", page, frame_index);
-    page_table_print_entry(pt, page);
-    puts("");
-#endif
 }
 
 
-// ----------------------------------------------------------------------------
-// Second-chance FIFO handler.
+/**
+ * Second-chance FIFO handler.
+ */
 void page_fault_handler_2fifo( struct page_table *pt, int page ) {
     int frame, bits;
     page_table_get_entry(pt, page, &frame, &bits);
@@ -347,19 +319,8 @@ void page_fault_handler_2fifo( struct page_table *pt, int page ) {
         bits |= PROT_READ;
         //Get the corresponding frame node
         f_node * tempNode = &frame_table[frame]; 
-        #ifdef DEBUG
-            printf("2FIFO: Sanity check.  Page: %i, PAGE(frame): %i, frame: %i, f_list: %i\n", page, PAGE(frame), frame, tempNode->f_list);
-        #endif
         if ((page == PAGE(frame)) && tempNode->f_list == 2) { //Note: the page == PAGE(frame) check is to ensure it's paged in.
             //We have an entry in the second chance list, bump that back up
-            #ifdef DEBUG
-            printf("2FIFO: Bumping a page back from the second-chance list.  Page: %i, frame: %i\n", page, frame);
-            printf("Before:\n");
-            sfo_print();
-            #endif
-            #ifdef MOVE
-                printf("MOVING FROM SECOND\n");
-            #endif
             sfo_remove(tempNode, &sf_head);
             
             // Decrement the number of second-chance entries, insert to the first-chance list, and update the releavnt fields.
@@ -368,13 +329,8 @@ void page_fault_handler_2fifo( struct page_table *pt, int page ) {
             tempNode->f_list = 1;
             frame_index = frame;
             bits = tempNode->bits;
-            #ifdef DEBUG
-                printf("After:\n");
-                sfo_print();
-            #endif
         }
-        else if ((page == PAGE(frame)) && tempNode->f_list == 1)
-        {
+        else if ((page == PAGE(frame)) && tempNode->f_list == 1) {
             printf("We have a read page fault, yet we're in the first 2FIFO list.  This should be impossible.\n");
             exit(1);
         }
@@ -383,29 +339,20 @@ void page_fault_handler_2fifo( struct page_table *pt, int page ) {
             frame_index = find_free_frame();
             if (frame_index == -1) {
                 // We have no free frames.  We need to evict the oldest page.
-                #ifdef DEBUG
-                    printf("2FIFO: Attempting to evict page.  First-chance head: %p, second-chance head: %p\n", ff_head, sf_head);
-                #endif
                 // Evict from second-chance list if present (which it should be except in very low frame cases); otherwise evict from first list.
-                if (sf_head == NULL)
-                {
+                if (sf_head == NULL) {
                     frame_index = sfo_remove(ff_head, &ff_head);
                     f_entries--;
                 }
-                else
-                {
+                else {
                     frame_index = sfo_remove(sf_head, &sf_head);
                     s_entries--;
                 }
-                if (frame_index == -1)
-                {
+                if (frame_index == -1) {
                     printf("2FIFO: could not get a frame by removing.  What?\n");
                     return;
                 }
                 evict(pt, frame_index);
-                #ifdef DEBUG
-                    printf("2FIFO: Evicted page that was in frame %i.\n", frame_index);
-                #endif
             }
             // Fetch our evicted node and update its relevant fields.
             tempNode = &frame_table[frame_index];
@@ -415,9 +362,6 @@ void page_fault_handler_2fifo( struct page_table *pt, int page ) {
             // Read in from disk to physical memory
             disk_read(disk, page, &physmem[frame_index * PAGE_SIZE]);
             ++stats.disk_reads;
-            #ifdef DEBUG
-                    sfo_print();
-            #endif
         }
     } else if (bits & PROT_READ && !(bits & PROT_WRITE)) { // Missing write bit
         bits |= PROT_WRITE;
@@ -428,8 +372,7 @@ void page_fault_handler_2fifo( struct page_table *pt, int page ) {
     }
     
     // Update the page table entry for this page
-    if (frame_table[frame_index].f_list != 2)
-    {
+    if (frame_table[frame_index].f_list != 2) {
         page_table_set_entry(pt, page, frame_index, bits);
         PAGE(frame_index) = page;
         BITS(frame_index) = bits;
@@ -438,18 +381,13 @@ void page_fault_handler_2fifo( struct page_table *pt, int page ) {
     // Mark the frame as used
     FREE(frame_index) = 1;
 
-#ifdef DEBUG
-    printf("Set page %d to frame %d\n", page, frame_index);
-    page_table_print_entry(pt, page);
-    page_table_print(pt);
-    puts("");
-#endif
 }
 
 
-// ----------------------------------------------------------------------------
-// Handler for our custom algorithm.  First looks for free frames, then 
-// unmodified ones, and finally goes with the oldest entry a la FIFO.
+/**
+ * Handler for our custom algorithm.  First looks for free frames, then 
+ * unmodified ones, and finally goes with the oldest entry a la FIFO.
+ */
 void page_fault_handler_custom( struct page_table *pt, int page ) {
     int frame, bits;
     page_table_get_entry(pt, page, &frame, &bits);
@@ -489,17 +427,12 @@ void page_fault_handler_custom( struct page_table *pt, int page ) {
     FREE(frame_index) = 1;
     fifo_insert(frame_index);
 
-#ifdef DEBUG
-    printf("Set page %d to frame %d\n", page, frame_index);
-    page_table_print_entry(pt, page);
-    puts("");
-#endif
 }
 
 
 /**
  * Search for unused frame, return its index if found or -1 if none available
- **/
+ */
 int find_free_frame() {
     // Search frame table for a free (unused) frame, return its index if found
     for (int i = 0; i < args.nframes; ++i) {
@@ -513,42 +446,35 @@ int find_free_frame() {
 /**
  * Searches for a non-dirty page that can be evicted without writing back to disk.
  * Which page we ultimately return depends on how many unmodified pages we have.
- * @param 
- **/
+ */
 int find_clean_frame() {
     // Search frame table for a clean frame, return its index if found
     f_node * node = fifo_tail->next;
     f_node * candidate = NULL;
     chance = args.nframes * 5/6;
     int i = 0;
-    while (node != NULL && i < chance)
-    {
-        if (node->bits & (~PROT_WRITE))
-        {
+    while (node != NULL && i < chance) {
+        if (node->bits & (~PROT_WRITE)) {
             i++;
             candidate = node;
         }
         node = node->next;
     }
-    if ( candidate != NULL )
-    {
+    if ( candidate != NULL ) {
         node = candidate;
             if (node == fifo_tail) {
                 fifo_tail = fifo_tail->next;
-                if (fifo_tail != NULL)
-                {
+                if (fifo_tail != NULL) {
                     fifo_tail->prev = NULL;
                 }
-                else
-                {
+                else {
                     fifo_head = fifo_tail;
                 }
                 node->f_list = 0;
                 return FRAMEID(node);
             }
             else {
-                if (node->next != NULL)
-                {
+                if (node->next != NULL) {
                     node->next->prev = node->prev;
                 }
                     node->prev->next = node->next;
@@ -565,12 +491,8 @@ int find_clean_frame() {
 
 /**
  * Create and insert a new node with the specified frame_index into the fifo list
- **/
+ */
 void fifo_insert(int frame_index) {
-#ifdef DEBUG
-    printf("fifo_insert(): inserting frame #%d", frame_index);
-    fifo_print();
-#endif
 
     f_node * node = &frame_table[frame_index];
 
@@ -579,18 +501,10 @@ void fifo_insert(int frame_index) {
         fifo_head = node;
         fifo_tail = node;
         node->f_list = 1;
-#ifdef DEBUG
-        printf("fifo_insert(): inserted\t\t");
-        fifo_print();
-#endif
     } else {                 // Nodes in list
         // See if the frame_index is already in the list
-        if (node->f_list == 1)
-        {
+        if (node->f_list == 1) {
             // Don't insert already inserted items
-#ifdef DEBUG
-            printf("Node for frame #%d already in list, skipping insertion\n", frame_index);
-#endif
             return;
         }
 
@@ -600,36 +514,21 @@ void fifo_insert(int frame_index) {
         fifo_tail  = node;
         node->f_list = 1;
 
-#ifdef DEBUG
-        printf("fifo_insert(): inserted\t\t");
-        fifo_print();
-#endif
     }
 }
 
 /**
  * Remove the head node of the fifo list and return its frame_index value,
  * or -1 if the fifo list is empty
- **/
+ */
 int fifo_remove() {
-#ifdef DEBUG
-    printf("fifo_remove()");
-    fifo_print();
-#endif
 
     if (fifo_head == NULL) { // Nothing to remove
-#ifdef DEBUG
-        printf("fifo_remove(): head == null, nothing to remove\n");
-#endif
         return -1;
     } else if (fifo_head == fifo_tail) { // Only 1 element
         int frame_index = FRAMEID(fifo_head);
-#ifdef DEBUG
-        printf("fifo_remove(): head == tail, 1 element, removing frame #%i", FRAMEID(fifo_head));
-#endif
         fifo_head->f_list = 0;
         fifo_head = fifo_tail = NULL;
-        fifo_print();
         return frame_index;
     }
 
@@ -639,68 +538,23 @@ int fifo_remove() {
     fifo_head = fifo_head->prev;
     fifo_head->next = NULL;
 
-#ifdef DEBUG
-    printf("fifo_remove(): removing frame #%d", frame_index);
-    fifo_print();
-#endif
     return frame_index;
-}
-
-/**
- * Print the contents of the fifo from tail to head
- **/
-void fifo_print() {
-    printf("\tFIFO: [");
-    f_node *node = fifo_tail;
-    while (node != NULL) {
-        printf("%i ", FRAMEID(node));
-        node = node->next;
-    }
-    printf("]\n");
-}
-
-/**
- * Print the contents of the sfifo lists from head to tail.  Sorry for the reversal.
- * Since this is so messy, we need to specify debug level 2 for it to show.
- **/
-void sfo_print() {
-#ifdef DEBUG2
-    printf("\tSFIFO 1: [");
-    f_node *node = ff_head;
-    while (node != NULL) {
-        printf("%i/%i/%i/%i ", FRAMEID(node), node->page, node->bits, node->f_list);
-        node = node->next;
-    }
-    printf("]\n");
-    printf("\tSFIFO 2: [");
-    node = sf_head;
-    while (node != NULL) {
-        printf("%i/%i/%i/%i ", FRAMEID(node), node->page, node->bits, node->f_list);
-        node = node->next;
-    }
-    printf("]\n");
-#endif
 }
 
 /**
  * Insert a node into the combined first- and second-chance lists.
  * In the event that the first list is full, this properly moves one to the second list.
  * If that is full as well, this properly evicts the oldest page of the second list.
- **/
+ */
 void sfo_insert(struct page_table *pt, f_node * node) {
-#ifdef DEBUG
-    printf("2FIFO: insert page %i, frame %i\n", node->page, FRAMEID(node));
-#endif
     // Insert node into the first-chance list.
-    if (ff_head == NULL)
-    {
+    if (ff_head == NULL) {
         ff_head = node;
         ff_tail = node;
         node->next = NULL;
         node->prev = NULL;
     }
-    else
-    {
+    else {
         ff_tail->next = node;
         node->prev = ff_tail;
         ff_tail = node;
@@ -708,33 +562,17 @@ void sfo_insert(struct page_table *pt, f_node * node) {
     }
     node->f_list = 1;
     f_entries++;
-    if (f_entries > FIRST_L)
-    {
+    if (f_entries > FIRST_L) {
         // The first-chance list is full; we need to bump one to the second-chance list.
-    #ifdef MOVE
-        printf("2FIFO: bumping from first list to second.  Page: %i, frame: %i\n", ff_head->page, FRAMEID(ff_head));
-        //printf("Before:\n");
-        //sfo_print();
-    #endif
         // Check if the second list is empty.
-        if (sf_head == NULL)
-        {
-        #ifdef DEBUG
-        printf("sf_head is null!\n");
-        #endif
+        if (sf_head == NULL) {
             sf_head = ff_head;
             sf_tail = sf_head;
             ff_head = ff_head->next;
             ff_head->prev = NULL;
             sf_head->next = NULL;
         }
-        else
-        {
-        #ifdef DEBUG
-        printf("sf_head isn't null!\n");
-        printf("ff_head: %p, page = %i, frame = %i, bits = %i, f_list = %i\n", ff_head, ff_head->page, FRAMEID(ff_head), ff_head->bits, ff_head->f_list); 
-        printf("sf_tail: %p, page = %i, frame = %i, bits = %i, f_list = %i\n", sf_tail, sf_tail->page, FRAMEID(sf_tail), sf_tail->bits, sf_tail->f_list); 
-        #endif
+        else {
             node = ff_head;
             sfo_remove(node, &ff_head);
             sf_tail->next = node;
@@ -744,20 +582,10 @@ void sfo_insert(struct page_table *pt, f_node * node) {
         }
         // Update the associated list of the newly-inserted node, and invalidate the page.
         sf_tail->f_list = 2;
-        #ifdef MOVE
-        printf("sf_tail: %p, page = %i, frame = %i, bits = %i, f_list = %i\n", sf_tail, sf_tail->page, FRAMEID(sf_tail), sf_tail->bits, sf_tail->f_list); 
-        #endif
         page_table_set_entry(pt, sf_tail->page, FRAMEID(sf_tail), PROT_NONE);
         
         s_entries++;
-        #ifdef DEBUG
-            sfo_print();
-        #endif
-        if (s_entries > SECOND_L)
-        {
-            #ifdef DEBUG
-                printf("Removing node %p from second list, and evicting page %i in frame %i\n", sf_head, sf_head->page, FRAMEID(sf_head));
-            #endif
+        if (s_entries > SECOND_L) {
             // We have too many entries in the second list and must evict a page.
             evict(pt, FRAMEID(sf_head));
             sf_head->free = 0;
@@ -765,9 +593,6 @@ void sfo_insert(struct page_table *pt, f_node * node) {
             sf_head = sf_head->next;
             sf_head->prev = NULL;
             s_entries--;
-        #ifdef DEBUG
-            sfo_print();
-        #endif
         }
         f_entries--;
     }
@@ -811,33 +636,17 @@ int sfo_remove(f_node * node, f_node ** head) {
             node->prev->next = node->next;
             node->next->prev = node->prev;
         }
-        #ifdef DEBUG
-        printf("Remove check!\n");
-        printf("ff_head: %p, page = %i, frame = %i, bits = %i, f_list = %i\n", ff_head, ff_head->page, FRAMEID(ff_head), ff_head->bits, ff_head->f_list); 
-        printf("sf_tail: %p, page = %i, frame = %i, bits = %i, f_list = %i\n", sf_tail, sf_tail->page, FRAMEID(sf_tail), sf_tail->bits, sf_tail->f_list); 
-        sfo_print();
-        #endif
         return FRAMEID(node);
    }
 }
 
 /**
  * Evicts the page that is in the frame indexed by f_num, writing to disk first if needed
- **/
-void evict(struct page_table * pt, int f_num)
-{
+ */
+void evict(struct page_table * pt, int f_num) {
     //NOTE: We assume that write bit set implies a modification was made.
-#ifdef DEBUG
-    printf("Evicting page %i in frame %i, f_num = %i\n", PAGE(f_num), f_num, f_num);
-    page_table_print_entry(pt, PAGE(f_num));
-    puts("");
-#endif
     
-    if (BITS(f_num) & PROT_WRITE)
-    {
-#ifdef DEBUG
-        printf("Writing to disk: page number %i, frame number %i\n", PAGE(f_num), f_num);
-#endif
+    if (BITS(f_num) & PROT_WRITE) {
         disk_write(disk, PAGE(f_num), &physmem[f_num * PAGE_SIZE]);
         ++stats.disk_writes;
     }
